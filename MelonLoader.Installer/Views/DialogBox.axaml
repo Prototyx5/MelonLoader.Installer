@@ -24,9 +24,9 @@
         <Grid IsVisible="{Binding !IsConfirmation}" Grid.Column="0" Grid.Row="2" VerticalAlignment="Bottom" HorizontalAlignment="Center" ColumnDefinitions="60, 60, 60" RowDefinitions="60">
             <Button Grid.Column="1" Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center" Click="ConfirmHandler">OK</Button>
         </Grid>
-        <Grid IsVisible="{Binding IsConfirmation}" Grid.Column="0" Grid.Row="2" VerticalAlignment="Bottom" HorizontalAlignment="Center" ColumnDefinitions="60, 60" RowDefinitions="60">
-            <Button Grid.Column="1" Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center" Click="CancelHandler" Content="{Binding CancelText}"/>
-            <Button Grid.Column="0" Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center" Click="ConfirmHandler" Background="#383" Content="{Binding ConfirmText}"/>
+        <Grid IsVisible="{Binding IsConfirmation}" Grid.Column="0" Grid.Row="2" VerticalAlignment="Bottom" HorizontalAlignment="Center" ColumnDefinitions="auto, auto" RowDefinitions="60">
+            <Button Grid.Column="1" Grid.Row="0" Margin="4 0" VerticalAlignment="Center" HorizontalAlignment="Center" Click="CancelHandler" Content="{Binding CancelText}"/>
+            <Button Grid.Column="0" Grid.Row="0" Margin="4 0" VerticalAlignment="Center" HorizontalAlignment="Center" Click="ConfirmHandler" Background="#383" Content="{Binding ConfirmText}"/>
         </Grid>
     </Grid>
 </Window>

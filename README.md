@@ -56,6 +56,11 @@ You can build the project locally using the following command:
 dotnet publish
 ```
 
+Run the unit tests with:
+```bash
+dotnet test MelonLoader.Installer.Tests
+```
+
 ### Pull Requests:
 All pull requests should be made towards the `development` branch.
 The master branch contains the source code for the stable release and is protected to ensure stability.

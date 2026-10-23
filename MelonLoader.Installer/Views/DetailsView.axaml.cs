@@ -89,9 +89,22 @@ public partial class DetailsView : UserControl
         }
     }
 
-    private void NightlyToggleHandler(object sender, RoutedEventArgs args)
+    private async void NightlyToggleHandler(object sender, RoutedEventArgs args)
     {
         UpdateVersionList();
+
+        if (NightlyCheck.IsChecked != true || string.IsNullOrEmpty(MLManager.NightlyError))
+            return;
+
+        // The nightly builds could not be listed earlier, try once more now that they were asked for
+        await MLManager.Init();
+        if (Model == null)
+            return;
+
+        UpdateVersionList();
+
+        if (!string.IsNullOrEmpty(MLManager.NightlyError))
+            DialogBox.ShowError($"Failed to fetch the nightly builds. Stable versions are still available.\n{MLManager.NightlyError}");
     }
 
     public void UpdateVersionList()
@@ -173,10 +186,25 @@ public partial class DetailsView : UserControl
         ShowLinuxInstructions.IsVisible = false;
         ShowMacOSInstructions.IsVisible = false;
 
-        _ = MLManager.InstallAsync(Model.Game.Dir, Model.Game.MLInstalled && !KeepFilesCheck.IsChecked!.Value,
-            (MLVersion)VersionCombobox.SelectedItem!, Model.Game.Arch,
-            (progress, newStatus) => Dispatcher.UIThread.Post(() => OnInstallProgress(progress, newStatus)),
-            (errorMessage) => Dispatcher.UIThread.Post(() => OnOperationFinished(errorMessage)));
+        var gameDir = Model.Game.Dir;
+        var removeUserFiles = Model.Game.MLInstalled && !KeepFilesCheck.IsChecked!.Value;
+        var version = (MLVersion)VersionCombobox.SelectedItem!;
+        var arch = Model.Game.Arch;
+
+        // Run off the UI thread: the previous version is removed before the first await
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await MLManager.InstallAsync(gameDir, removeUserFiles, version, arch,
+                    (progress, newStatus) => Dispatcher.UIThread.Post(() => OnInstallProgress(progress, newStatus)),
+                    (errorMessage) => Dispatcher.UIThread.Post(() => OnOperationFinished(errorMessage)));
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.UIThread.Post(() => OnOperationFinished("The installation failed: " + ex.Message));
+            }
+        });
     }
 
     public bool AskForElevation()
@@ -223,6 +251,7 @@ public partial class DetailsView : UserControl
             return;
 
         Model.Installing = false;
+        Progress.IsIndeterminate = false;
 
 #if LINUX
         ShowLinuxInstructions.IsVisible = Model.Game.MLInstalled;
@@ -282,12 +311,49 @@ public partial class DetailsView : UserControl
             return;
         }
 
-        if (!Model.Game.MLInstalled || AskForElevation())
+        if (!Model.Game.MLInstalled)
             return;
 
-        var error = MLManager.Uninstall(Model.Game.Dir, !KeepFilesCheck.IsChecked!.Value);
+        var gameDir = Model.Game.Dir;
+        var removeUserFiles = !KeepFilesCheck.IsChecked!.Value;
 
-        OnOperationFinished(error);
+        var message = $"Are you sure you want to uninstall MelonLoader from {Model.Game.Name}?\n";
+        message += removeUserFiles
+            ? "Your Mods, Plugins, UserLibs and UserData folders will be PERMANENTLY DELETED."
+            : "Your Mods, Plugins, UserLibs and UserData folders will be kept.";
+
+        DialogBox.ShowConfirmation("Uninstall MelonLoader", message,
+            () => StartUninstall(gameDir, removeUserFiles),
+            null, "Uninstall", "Cancel");
+    }
+
+    private void StartUninstall(string gameDir, bool removeUserFiles)
+    {
+        if (Model == null || AskForElevation())
+            return;
+
+        Model.Installing = true;
+        ShowLinuxInstructions.IsVisible = false;
+        ShowMacOSInstructions.IsVisible = false;
+
+        Progress.IsIndeterminate = true;
+        OnInstallProgress(0, "Uninstalling MelonLoader");
+
+        // Deleting can take a while, keep the UI responsive
+        _ = Task.Run(() =>
+        {
+            string? error;
+            try
+            {
+                error = MLManager.Uninstall(gameDir, removeUserFiles);
+            }
+            catch (Exception ex)
+            {
+                error = "The uninstallation failed: " + ex.Message;
+            }
+
+            Dispatcher.UIThread.Post(() => OnOperationFinished(error));
+        });
     }
 
     private async void SelectZipHandler(object sender, TappedEventArgs args)

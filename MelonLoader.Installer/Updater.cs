@@ -24,8 +24,8 @@ public static partial class Updater
             return null;
         }
 
-        var downloadUrl = await CheckForUpdateAsync();
-        if (downloadUrl == null)
+        var update = await CheckForUpdateAsync();
+        if (update == null)
         {
             State = UpdateState.AlreadyChecked;
             return null;
@@ -33,7 +33,8 @@ public static partial class Updater
 
         State = UpdateState.Updating;
 
-        return Task.Run(() => UpdateAsync(downloadUrl));
+        var (downloadUrl, digest) = update.Value;
+        return Task.Run(() => UpdateAsync(downloadUrl, digest));
     }
 
     public static bool WaitAndRemoveApp(string originalPath, int prevPID)
@@ -106,7 +107,7 @@ public static partial class Updater
 #endif
     }
 
-    private static async Task UpdateAsync(string downloadUrl)
+    private static async Task UpdateAsync(string downloadUrl, string? digest)
     {
         var newPath = Path.GetTempFileName()
 #if WINDOWS
@@ -114,12 +115,26 @@ public static partial class Updater
 #endif
                       ;
 
-        await using (var newStr = File.OpenWrite(newPath))
+        await using (var newStr = File.Create(newPath))
         {
             var result = await InstallerUtils.DownloadFileAsync(downloadUrl, newStr, (progress, newStatus) => Progress?.Invoke(progress, newStatus));
             if (result != null)
             {
+                newStr.Close();
+                TryDelete(newPath);
                 throw new Exception("Failed to download the latest installer version: " + result);
+            }
+        }
+
+        // Never run an executable that doesn't match the checksum GitHub published for it
+        using (var verifyStr = File.OpenRead(newPath))
+        {
+            var digestErr = InstallerUtils.VerifyDigest(verifyStr, digest);
+            if (digestErr != null)
+            {
+                verifyStr.Close();
+                TryDelete(newPath);
+                throw new Exception("Failed to update the installer: " + digestErr);
             }
         }
 
@@ -203,23 +218,24 @@ public static partial class Updater
     }
 #endif
 
-    private static async Task<string?> CheckForUpdateAsync()
+    private static void TryDelete(string path)
     {
-        HttpResponseMessage response;
         try
         {
-            response = await InstallerUtils.Http.GetAsync(PathManager.InstallerLatestReleaseApi);
+            File.Delete(path);
         }
-        catch
-        {
-            return null;
-        }
+        catch { }
+    }
 
-        if (!response.IsSuccessStatusCode)
+    private static async Task<(string Url, string? Digest)?> CheckForUpdateAsync()
+    {
+        var response = await GitHubApi.GetLatestInstallerRelease();
+
+        // A cached answer only means that GitHub couldn't be reached, so there's nothing to update from
+        if (response.Node == null || response.Stale)
             return null;
 
-        var respStr = await response.Content.ReadAsStringAsync();
-        var json = JsonNode.Parse(respStr)!;
+        var json = response.Node;
 
         if (json["tag_name"] == null)
             return null;
@@ -259,7 +275,11 @@ public static partial class Updater
             );
         });
 
-        return asset?["browser_download_url"]?.ToString();
+        var assetUrl = asset?["browser_download_url"]?.ToString();
+        if (assetUrl == null)
+            return null;
+
+        return (assetUrl, asset?["digest"]?.ToString());
     }
 
     public enum UpdateState

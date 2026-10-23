@@ -21,6 +21,9 @@ public class MLVersion
     public required SemVersion Version { get; init; }
     public bool IsLocalPath { get; init; }
 
+    // Keyed by download URL
+    private readonly Dictionary<string, string> downloadDigests = new();
+
     public static (SemVersion?, string?)? GetMelonLoaderVersion(string gameDir, out Architecture architecture, out string? errorMessage)
     {
         architecture = Architecture.Unknown;
@@ -203,6 +206,15 @@ public class MLVersion
         };
     }
     
+    /// <summary>
+    /// Gets the checksum GitHub published for the build of the given architecture, if there is one.
+    /// </summary>
+    public string? GetDigest(Architecture architecture)
+    {
+        var url = GetDownload(architecture);
+        return url != null && downloadDigests.TryGetValue(url, out var digest) ? digest : null;
+    }
+
     public string? GetDownload(Architecture architecture)
         => architecture switch
         {
@@ -249,7 +261,8 @@ public class MLVersion
         DownloadUrlAndroidArm64 = arch == Architecture.AndroidArm64 ? path : null;
     }
     
-    public void ApplyURLDownload(string fileName, string downloadUrl)
+    /// <param name="digest">The checksum GitHub publishes for the file, formatted as "sha256:&lt;hex&gt;".</param>
+    public void ApplyURLDownload(string fileName, string downloadUrl, string? digest = null)
     {
         string fileNameLower = fileName.ToLower();
         switch (fileNameLower)
@@ -311,5 +324,8 @@ public class MLVersion
             default:
                 break;
         }
+
+        if (!string.IsNullOrEmpty(digest))
+            downloadDigests[downloadUrl] = digest;
     }
 }

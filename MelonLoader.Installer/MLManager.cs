@@ -75,9 +75,15 @@ internal static class MLManager
             return string.Empty;
 
         string? err;
-        inited = string.IsNullOrEmpty(err = await RefreshVersions());
+        inited = string.IsNullOrEmpty(err = await RefreshVersions()) && string.IsNullOrEmpty(NightlyError);
         return err;
     }
+
+    /// <summary>
+    /// The reason nightly builds could not be listed, if any.
+    /// This never prevents the stable releases from being listed.
+    /// </summary>
+    public static string? NightlyError { get; private set; }
 
     private static async Task<string?> RefreshVersions()
     {
@@ -85,31 +91,44 @@ internal static class MLManager
 
         if (localBuild != null)
             Versions.Add(localBuild);
-        
-        string? fetchNightlyError = await GetNightlyVersionsAsync(Versions);
-        if (!string.IsNullOrEmpty(fetchNightlyError))
-            return fetchNightlyError;
-        
+
+        // Nightly builds are optional: a failure here must not hide the stable releases
+        NightlyError = await GetNightlyVersionsAsync(Versions);
+
         string? fetchReleasesError = await GetReleasedVersionsAsync(Versions);
         if (!string.IsNullOrEmpty(fetchReleasesError))
             return fetchReleasesError;
-        
+
         if (Versions.Count <= 0)
             return "No Versions Found";
-        
+
         return string.Empty;
     }
 
     private static async Task<string?> GetNightlyVersionsAsync(List<MLVersion> versions)
     {
+        try
+        {
+            return await FetchNightlyVersionsAsync(versions);
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    private static async Task<string?> FetchNightlyVersionsAsync(List<MLVersion> versions)
+    {
         var runsJson = await GitHubApi.GetWorkflowRuns();
         if (runsJson.Node == null)
             return runsJson.Error;
-        
+
+        string? lastError = null;
+        var added = 0;
         foreach (var run in runsJson.Node.AsArray())
         {
             var runId = run!["id"]!.ToString();
-            
+
             var runName = run!["name"]!.ToString();
             if (runName.ToLower().StartsWith("v"))
                 runName = runName[1..];
@@ -119,30 +138,35 @@ internal static class MLManager
 
             if (!SemVersion.TryParse(runName, SemVersionStyles.Any, out var runVersion))
                 continue;
-            
+
             if (versions.FirstOrDefault(x => x.Version.CompareSortOrderTo(runVersion) == 0) != null)
                 continue;
-            
+
             var version = new MLVersion { Version = runVersion };
             var artifacts = await GitHubApi.GetWorkflowRunArtifacts(runId);
             if (artifacts.Node == null)
+            {
+                lastError = artifacts.Error;
                 continue;
-            
+            }
+
             foreach (var art in artifacts.Node.AsArray())
             {
                 string fileName = art!["name"]!.ToString();
                 string fixedNightlyDownload =
                     $"https://nightly.link/LavaGang/MelonLoader/actions/runs/{runId}/{fileName}.zip";
-                version.ApplyURLDownload(fileName, fixedNightlyDownload);
+                version.ApplyURLDownload(fileName, fixedNightlyDownload, art["digest"]?.ToString());
             }
-            
+
             if (version.IsDownloadEmpty())
                 continue;
 
             versions.Add(version);
+            added++;
         }
 
-        return string.Empty;
+        // Only report a problem if it left us without any nightly build
+        return added == 0 ? lastError : null;
     }
     
     private static async Task<string?> GetReleasedVersionsAsync(List<MLVersion> versions)
@@ -178,7 +202,7 @@ internal static class MLManager
             {
                 string fileName = asset!["name"]!.ToString();
                 string fixedDownload = asset!["browser_download_url"]!.ToString();
-                version.ApplyURLDownload(Path.GetFileNameWithoutExtension(fileName), fixedDownload);
+                version.ApplyURLDownload(Path.GetFileNameWithoutExtension(fileName), fixedDownload, asset["digest"]?.ToString());
             }
             
             if (version.IsDownloadEmpty())
@@ -331,6 +355,40 @@ internal static class MLManager
             return;
         }
 
+        // The build is downloaded and verified before touching the game,
+        // so a failed or corrupted download never leaves it without MelonLoader.
+        using var bufferStr = new MemoryStream();
+        var tasks = 2;
+        var currentTask = 0;
+
+        void SetProgress(double progress, string? newStatus = null)
+        {
+            onProgress?.Invoke(currentTask / (double)tasks + progress / tasks, newStatus);
+        }
+
+        if (!version.IsLocalPath)
+        {
+            SetProgress(0, "Downloading MelonLoader " + version);
+
+            var result = await InstallerUtils.DownloadFileAsync(downloadUrl, bufferStr, SetProgress);
+            if (result != null)
+            {
+                onFinished?.Invoke("Failed to download MelonLoader: " + result);
+                return;
+            }
+
+            SetProgress(1, "Verifying download");
+
+            var digestErr = InstallerUtils.VerifyDigest(bufferStr, version.GetDigest(arch));
+            if (digestErr != null)
+            {
+                onFinished?.Invoke(digestErr);
+                return;
+            }
+
+            currentTask++;
+        }
+
         onProgress?.Invoke(0, "Uninstalling previous versions");
 
         var unErr = Uninstall(gameDir, removeUserFiles);
@@ -360,27 +418,6 @@ internal static class MLManager
         }
         else
         {
-            var tasks = 2;
-            var currentTask = 0;
-
-            void SetProgress(double progress, string? newStatus = null)
-            {
-                onProgress?.Invoke(currentTask / (double)tasks + progress / tasks, newStatus);
-            }
-
-            SetProgress(0, "Downloading MelonLoader " + version);
-
-            using var bufferStr = new MemoryStream();
-            var result = await InstallerUtils.DownloadFileAsync(downloadUrl, bufferStr, SetProgress);
-            if (result != null)
-            {
-                onFinished?.Invoke("Failed to download MelonLoader: " + result);
-                return;
-            }
-            bufferStr.Seek(0, SeekOrigin.Begin);
-
-            currentTask++;
-
             SetProgress(0, "Installing " + version);
 
             var extRes = InstallerUtils.Extract(bufferStr, gameDir, SetProgress);
